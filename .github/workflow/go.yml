@@ -1,0 +1,29 @@
+name: build-go-binary
+
+on:
+  release:
+    types: [ published ] # 表示在创建新的 Release 时触发
+
+permissions:
+  contents: write
+
+jobs:
+  build-go-binary:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [ linux, windows, darwin ] # 需要打包的系统
+        goarch: [ amd64, arm64 ]
+        exclude:
+          - goarch: arm64
+            goos: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wangyoucao577/go-release-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }} # 一个默认的变量，用来实现往 Release 中添加文件
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          goversion: 1.22 # 可以指定编译使用的 Golang 版本
+          binary_name: "go-mysqlstat"
+          compress_assets: auto
