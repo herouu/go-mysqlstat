@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/duke-git/lancet/v2/datetime"
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/urfave/cli/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -15,13 +16,6 @@ import (
 
 // DB 数据库链接单例
 var DB *gorm.DB
-
-type MysqlConnect struct {
-	ip   string
-	pwd  string
-	port string
-	name string
-}
 
 // Quota 指标
 type Quota struct {
@@ -101,7 +95,7 @@ func main() {
 
 func mysqlStatusMonitor(c *cli.Context) error {
 	// 初始化数据库连接
-	invoke(c)
+	dbInit(c)
 	sigs := make(chan os.Signal, 1)
 	//注册信号处理函数
 	// Ctrl+C Ctrl+Z
@@ -111,8 +105,17 @@ func mysqlStatusMonitor(c *cli.Context) error {
 		prev := calQuota()
 		tw := table.NewWriter()
 		tw.SetTitle("Real-time Monitoring")
+		tw.SetStyle(table.Style{
+			Name:    "StyleDefault",
+			Box:     table.StyleBoxDefault,
+			Color:   table.ColorOptionsDefault,
+			Format:  table.FormatOptionsDefault,
+			HTML:    table.DefaultHTMLOptions,
+			Options: table.OptionsDefault,
+			Title:   table.TitleOptions{Align: text.AlignCenter},
+		})
 		tw.AppendHeader(table.Row{"Time", "Select", "Insert", "Update", "Delete", "Conn", "Max_conn", "Recv", "Send"})
-		tw.SetAutoIndex(true)
+		tw.SetAutoIndex(false)
 		time.Sleep(1 * time.Second)
 		fmt.Println(tw.Render())
 		count := 1
@@ -141,11 +144,23 @@ func mysqlStatusMonitor(c *cli.Context) error {
 	return nil
 }
 
-func invoke(c *cli.Context) {
-	connect := MysqlConnect{ip: c.String("mysql_ip"),
-		pwd: c.String("mysql_password"), port: c.String("mysql_port"),
-		name: c.String("mysql_user")}
-	database(&connect)
+func dbInit(c *cli.Context) {
+	ip := c.String("mysql_ip")
+	pwd := c.String("mysql_password")
+	port := c.String("mysql_port")
+	name := c.String("mysql_user")
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=utf8mb4&parseTime=True&loc=Local", name, pwd, ip, port)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		panic(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	DB = db
 }
 
 type DbResult struct {
@@ -204,19 +219,4 @@ func buildCalQuota(prev *Quota, c *Quota) *CalQuota {
 		recvMbps:        fmt.Sprintf("%.3f MBit/s", recvMbps),
 		sendMbps:        fmt.Sprintf("%.3f MBit/s", sendMbps),
 	}
-}
-
-func database(m *MysqlConnect) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=utf8mb4&parseTime=True&loc=Local", m.name, m.pwd, m.ip, m.port)
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		panic(err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		panic(err)
-	}
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	DB = db
 }
