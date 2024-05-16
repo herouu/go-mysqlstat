@@ -5,11 +5,16 @@ import (
 	"github.com/duke-git/lancet/v2/datetime"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/urfave/cli/v2"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 )
+
+// DB 数据库链接单例
+var DB *gorm.DB
 
 type MysqlConnect struct {
 	ip   string
@@ -37,8 +42,8 @@ type CalQuota struct {
 	deletePerSecond int
 	recvPerSecond   int
 	sendPerSecond   int
-	recvMbps        int
-	sendMbps        int
+	recvMbps        string
+	sendMbps        string
 	currentTime     string
 	maxConn         int
 	connCount       int
@@ -94,18 +99,9 @@ func main() {
 	}
 }
 
-// table.add_column("Time", justify="left", style="cyan")
-//    table.add_column("Select", justify="left")
-//    table.add_column("Insert", justify="left")
-//    table.add_column("Update", justify="left")
-//    table.add_column("Delete", justify="left")
-//    table.add_column("Conn", justify="left")
-//    table.add_column("Max_conn", justify="left")
-//    table.add_column("Recv", justify="left")
-//    table.add_column("Send", justify="left")
-
 func mysqlStatusMonitor(c *cli.Context) error {
-	//
+	// 初始化数据库连接
+	invoke(c)
 	sigs := make(chan os.Signal, 1)
 	//注册信号处理函数
 	// Ctrl+C Ctrl+Z
@@ -145,15 +141,41 @@ func mysqlStatusMonitor(c *cli.Context) error {
 	return nil
 }
 
-func NewMysqlConnect(c *cli.Context) *MysqlConnect {
-	return &MysqlConnect{ip: c.String("mysql_ip"),
-		pwd: c.String("mysql_port"), port: c.String("mysql_port"),
-		name: c.String("mysql_name")}
+func invoke(c *cli.Context) {
+	connect := MysqlConnect{ip: c.String("mysql_ip"),
+		pwd: c.String("mysql_password"), port: c.String("mysql_port"),
+		name: c.String("mysql_user")}
+	database(&connect)
+}
+
+type DbResult struct {
+	VariableName string `gorm:"column:Variable_name"`
+	Value        int
 }
 
 // 指标计算
 func calQuota() *Quota {
-	return &Quota{selectCount: 1, insertCount: 2, updateCount: 3, deleteCount: 5, conn: 7, recv: 6, maxConn: 10, send: 11}
+
+	var sc DbResult
+	var ic DbResult
+	var uc DbResult
+	var dc DbResult
+	var mc DbResult
+	var br DbResult
+	var bs DbResult
+	var tc DbResult
+
+	//获取数据库的初始统计信息
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Com_select'").Scan(&sc)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Com_insert'").Scan(&ic)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Com_update'").Scan(&uc)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Com_delete'").Scan(&dc)
+	DB.Raw("SHOW GLOBAL VARIABLES LIKE 'max_connections'").Scan(&mc)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Bytes_received'").Scan(&br)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Bytes_sent'").Scan(&bs)
+	DB.Raw("SHOW GLOBAL STATUS LIKE 'Threads_connected'").Scan(&tc)
+	return &Quota{selectCount: sc.Value, insertCount: ic.Value, updateCount: uc.Value, deleteCount: dc.Value,
+		conn: tc.Value, recv: br.Value, maxConn: mc.Value, send: bs.Value}
 }
 
 func buildCalQuota(prev *Quota, c *Quota) *CalQuota {
@@ -164,6 +186,11 @@ func buildCalQuota(prev *Quota, c *Quota) *CalQuota {
 	deletePerSecond := c.deleteCount - prev.deleteCount
 	recvPerSecond := c.recv - prev.recv
 	sendPerSecond := c.send - prev.send
+
+	//将每秒接收和发送数据量从字节转换为兆比特
+	recvMbps := float64(recvPerSecond*8) / 1000000
+	sendMbps := float64(sendPerSecond*8) / 1000000
+
 	currentTime := datetime.FormatTimeToStr(time.Now(), "yyyy-MM-dd HH:mm:ss")
 	return &CalQuota{selectPerSecond: selectPerSecond,
 		insertPerSecond: insertPerSecond,
@@ -172,5 +199,24 @@ func buildCalQuota(prev *Quota, c *Quota) *CalQuota {
 		recvPerSecond:   recvPerSecond,
 		sendPerSecond:   sendPerSecond,
 		currentTime:     currentTime,
+		connCount:       c.conn,
+		maxConn:         c.maxConn,
+		recvMbps:        fmt.Sprintf("%.3f MBit/s", recvMbps),
+		sendMbps:        fmt.Sprintf("%.3f MBit/s", sendMbps),
 	}
+}
+
+func database(m *MysqlConnect) {
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=utf8mb4&parseTime=True&loc=Local", m.name, m.pwd, m.ip, m.port)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		panic(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	DB = db
 }
