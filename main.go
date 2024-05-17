@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	list "github.com/duke-git/lancet/v2/datastructure/list"
 	"github.com/duke-git/lancet/v2/datetime"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -9,13 +10,17 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 )
 
 // DB 数据库链接单例
 var DB *gorm.DB
+
+var clear map[string]func() //create a map for storing clear funcs
 
 // Quota 指标
 type Quota struct {
@@ -99,7 +104,7 @@ func mysqlStatusMonitor(c *cli.Context) error {
 	sigs := make(chan os.Signal, 1)
 	//注册信号处理函数
 	// Ctrl+C Ctrl+Z
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTSTP)
+	signal.Notify(sigs, syscall.SIGINT)
 
 	go func() {
 		prev := calQuota()
@@ -118,17 +123,23 @@ func mysqlStatusMonitor(c *cli.Context) error {
 		tw.SetAutoIndex(false)
 		time.Sleep(1 * time.Second)
 		fmt.Println(tw.Render())
+		li := list.NewList([]table.Row{})
+
 		count := 1
 		for {
-			if count%25 == 0 {
+			if count > 25 {
 				tw.ResetRows()
+				li.PopFirst()
+				tw.AppendRows(li.Data())
 			}
 			current := calQuota()
 			c := buildCalQuota(prev, current)
 			prev = current
-			tw.AppendRow(table.Row{c.currentTime, c.selectPerSecond, c.insertPerSecond, c.updatePerSecond, c.deletePerSecond, c.connCount,
-				c.maxConn, c.recvMbps, c.sendMbps})
-			fmt.Print("\033[0m\033[2J\033c")
+			row := table.Row{c.currentTime, c.selectPerSecond, c.insertPerSecond, c.updatePerSecond, c.deletePerSecond, c.connCount,
+				c.maxConn, c.recvMbps, c.sendMbps}
+			li.Push(row)
+			tw.AppendRow(row)
+			callClear()
 			fmt.Println(tw.Render())
 			time.Sleep(1 * time.Second)
 
@@ -218,5 +229,34 @@ func buildCalQuota(prev *Quota, c *Quota) *CalQuota {
 		maxConn:         c.maxConn,
 		recvMbps:        fmt.Sprintf("%.3f MBit/s", recvMbps),
 		sendMbps:        fmt.Sprintf("%.3f MBit/s", sendMbps),
+	}
+}
+
+func init() {
+	clear = make(map[string]func()) //Initialize it
+	clear["linux"] = func() {
+		cmd := exec.Command("clear") //Linux example, its tested
+		cmd.Stdout = os.Stdout
+		err := cmd.Run()
+		if err != nil {
+			return
+		}
+	}
+	clear["windows"] = func() {
+		cmd := exec.Command("cmd", "/c", "cls") //Windows example, its tested
+		cmd.Stdout = os.Stdout
+		err := cmd.Run()
+		if err != nil {
+			return
+		}
+	}
+}
+
+func callClear() {
+	value, ok := clear[runtime.GOOS] //runtime.GOOS -> linux, windows, darwin etc.
+	if ok {                          //if we defined a clear func for that platform:
+		value() //we execute it
+	} else { //unsupported platform
+		panic("Your platform is unsupported! I can't clear terminal screen :(")
 	}
 }
