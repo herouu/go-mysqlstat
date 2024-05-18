@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	list "github.com/duke-git/lancet/v2/datastructure/list"
 	"github.com/duke-git/lancet/v2/datetime"
@@ -88,6 +89,13 @@ func main() {
 			Usage:    "Mysql Password",
 			Required: true,
 		},
+		&cli.StringFlag{
+			Name:     "top",
+			Value:    "",
+			Usage:    "需要提供一个整数类型的参数值，该参数值表示执行次数最频繁的前N条SQL语句",
+			Required: false,
+			Action:   topFrequentlySql,
+		},
 	}
 
 	app.Action = mysqlStatusMonitor
@@ -120,7 +128,7 @@ func mysqlStatusMonitor(c *cli.Context) error {
 			Title:   table.TitleOptions{Align: text.AlignCenter},
 		})
 		tw.AppendHeader(table.Row{"Time", "Select", "Insert", "Update", "Delete", "Conn", "Max_conn", "Recv", "Send"})
-		tw.SetAutoIndex(false)
+
 		time.Sleep(1 * time.Second)
 		fmt.Println(tw.Render())
 		li := list.NewList([]table.Row{})
@@ -259,4 +267,55 @@ func callClear() {
 	} else { //unsupported platform
 		panic("Your platform is unsupported! I can't clear terminal screen :(")
 	}
+}
+
+func topFrequentlySql(c *cli.Context, top string) error {
+	// 初始化数据库连接
+	dbInit(c)
+	var isPerformanceSchema int
+	DB.Raw("SELECT @@performance_schema").Scan(&isPerformanceSchema)
+
+	if isPerformanceSchema == 0 {
+		fmt.Println("performance_schema参数未开启。")
+		fmt.Println("在my.cnf配置文件里添加performance_schema=1，并重启mysqld进程生效。")
+		os.Exit(0)
+	}
+
+	DB.Raw("SET @sys.statement_truncate_len = 1024")
+	rows, err := DB.Raw("select query,db,last_seen,exec_count,max_latency,avg_latency from sys.statement_analysis order by exec_count desc, "+
+		"last_seen desc limit @top", sql.Named("top", top)).Rows()
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}(rows)
+	if err != nil {
+		return err
+	}
+	// 表格
+	tw := table.NewWriter()
+	tw.SetTitle("Query Analysis")
+	tw.SetStyle(table.Style{
+		Name:    "StyleDefault",
+		Box:     table.StyleBoxDefault,
+		Color:   table.ColorOptionsDefault,
+		Format:  table.FormatOptionsDefault,
+		HTML:    table.DefaultHTMLOptions,
+		Options: table.OptionsDefault,
+		Title:   table.TitleOptions{Align: text.AlignCenter},
+	})
+	tw.AppendHeader(table.Row{"执行语句", "数据库名", "最近执行时间", "SQL执行总次数", "最大执行时间", "平均执行时间"})
+
+	for rows.Next() {
+		var query, db, execCount, maxLatency, avgLatency sql.NullString
+		var lastSeen sql.NullTime
+		err := rows.Scan(&query, &db, &lastSeen, &execCount, &maxLatency, &avgLatency)
+		if err != nil {
+			fmt.Println(err)
+		}
+		tw.AppendRow(table.Row{query.String, db.String, lastSeen.Time.Format("2006-01-02 15:04:05.000000"), execCount.String, maxLatency.String, avgLatency.String})
+	}
+	fmt.Println(tw.Render())
+	return nil
 }
