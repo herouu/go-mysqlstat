@@ -97,6 +97,12 @@ func main() {
 			Usage:    "需要提供一个整数类型的参数值，该参数值表示访问次数最频繁的前N张表文件ibd",
 			Required: false,
 		},
+		&cli.StringFlag{
+			Name:     "uncommit",
+			Usage:    "需要提供一个整数类型的参数值，该参数值表示时间>=N秒的未提交事务的SQL",
+			Value:    "",
+			Required: false,
+		},
 		&cli.BoolFlag{
 			Name:     "lock",
 			Usage:    "查看当前锁阻塞的SQL",
@@ -171,17 +177,22 @@ func ctrlAction(context *cli.Context) error {
 	tinfo := context.Bool("tinfo")
 	fpk := context.Bool("fpk")
 	dead := context.Bool("dead")
+	uncommitV := context.String("uncommit")
 
 	if strutil.IsNotBlank(topV) {
 		showFrequentlySql(topV)
 	} else if strutil.IsNotBlank(ioV) {
 		showFrequentlyIo(ioV)
+	} else if strutil.IsNotBlank(uncommitV) && kill {
+		showUncommitSql(uncommitV, true)
+	} else if strutil.IsNotBlank(uncommitV) {
+		showUncommitSql(uncommitV, false)
 	} else if lock && kill {
 		showLockSql(true)
 	} else if lock {
 		showLockSql(false)
 	} else if kill {
-		fmt.Println("Error: --kill requires --lock")
+		fmt.Println("Error: --kill requires --lock or --kill --uncommit")
 	} else if index {
 		showRedundantIndexes()
 	} else if conn {
@@ -844,5 +855,98 @@ func showDeadlockInfo() {
 		fmt.Println("------------------------")
 		fmt.Println(match)
 		fmt.Println("------------------------")
+	}
+}
+
+func showUncommitSql(timeLimit string, kill bool) {
+
+	query := `SELECT
+            a.id,
+            a.user,
+            a.host,
+            a.db,
+            a.command,
+            CONCAT(a.time,'(秒)') as exec_time,
+            c.sql_text as uncommit_transaction,
+            CONCAT('KILL ', a.id) AS Kill_id
+        FROM
+            performance_schema.processlist a
+        JOIN
+            performance_schema.threads b ON a.id = b.processlist_id
+        JOIN
+            performance_schema.events_statements_current c ON b.thread_id = c.thread_id
+        WHERE
+            c.sql_text NOT REGEXP 'processlist'
+         and a.time >= @timeLimit order by a.time desc`
+
+	rows, err := DB.Raw(query, sql.Named("timeLimit", timeLimit)).Rows()
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// 表格
+	tw := table.NewWriter()
+	tw.SetTitle("Uncommit Transactions")
+	tw.SetStyle(table.Style{
+		Name:    "StyleDefault",
+		Box:     table.StyleBoxDefault,
+		Color:   table.ColorOptionsDefault,
+		Format:  table.FormatOptionsDefault,
+		HTML:    table.DefaultHTMLOptions,
+		Options: table.OptionsDefault,
+		Title:   table.TitleOptions{Align: text.AlignCenter},
+	})
+	tw.AppendHeader(table.Row{"事务ID", "来源用户", "来源主机", "数据库名", "SQL状态", "执行时间", "未提交事务的SQL", "kill事务ID"})
+
+	for rows.Next() {
+		var id, user, host, db, command, execTime, uncommitTransaction, killId sql.NullString
+		err := rows.Scan(&id, &user, &host, &db, &command, &execTime, &uncommitTransaction, &killId)
+		if err != nil {
+			fmt.Println(err)
+		}
+		tw.AppendRow(table.Row{id.String, user.String, host.String, db.String, command.String, execTime.String, uncommitTransaction.String,
+			killId.String})
+	}
+	fmt.Println(tw.Render())
+
+	// kill掉被锁住的sql
+	if kill {
+
+		kquery := `SELECT
+                CONCAT('KILL ', a.id) AS Kill_id
+            FROM
+                performance_schema.processlist a
+            JOIN
+                performance_schema.threads b ON a.id = b.processlist_id
+            JOIN
+                performance_schema.events_statements_current c ON b.thread_id = c.thread_id
+            WHERE
+                c.sql_text NOT REGEXP 'processlist'
+                and a.time >= @timeLimit order by a.time desc`
+		kRow, err := DB.Raw(kquery, sql.Named("timeLimit", timeLimit)).Rows()
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		newList := list.NewList([]string{})
+		defer func(kRow *sql.Rows) {
+			err := kRow.Close()
+			if err != nil {
+				fmt.Println(err)
+			}
+		}(kRow)
+		for kRow.Next() {
+			var killId sql.NullString
+			err := kRow.Scan(&killId)
+			if err != nil {
+				fmt.Println(err)
+			}
+			newList.Push(killId.String)
+		}
+		newList.ForEach(func(sqlKill string) {
+			DB.Exec(sqlKill)
+			fmt.Printf("已成功执行 %s\n", sqlKill)
+		})
 	}
 }
