@@ -3,7 +3,7 @@ uses: wangyoucao577/go-release-action@v1.50
 
 on:
   release:
-    types: [ published,prereleased,released ] # 表示在创建新的 Release 时触发
+    types: [ published,prereleased,released,edited ] # 表示在创建新的 Release 时触发
 
 permissions:
   contents: write
