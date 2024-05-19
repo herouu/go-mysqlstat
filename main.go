@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"syscall"
 	"time"
@@ -57,12 +58,6 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "go-mysqlstat"
 	app.Usage = "MySQL命令行监控工具 - mysqlstat"
-	app.Commands = []*cli.Command{
-		//{
-		//	Name:   "install",
-		//	Action: ctrlAction,
-		//},
-	}
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:     "mysql_ip",
@@ -174,6 +169,8 @@ func ctrlAction(context *cli.Context) error {
 	index := context.Bool("index")
 	conn := context.Bool("conn")
 	tinfo := context.Bool("tinfo")
+	fpk := context.Bool("fpk")
+	dead := context.Bool("dead")
 
 	if strutil.IsNotBlank(topV) {
 		showFrequentlySql(topV)
@@ -191,6 +188,10 @@ func ctrlAction(context *cli.Context) error {
 		showConnCount(ip, port)
 	} else if tinfo {
 		showTableInfo()
+	} else if fpk {
+		showFpkInfo()
+	} else if dead {
+		showDeadlockInfo()
 	} else {
 		mysqlStatusMonitor()
 	}
@@ -254,19 +255,38 @@ func mysqlStatusMonitor() {
 	<-sigs
 }
 
+// dbInit 连接到 MySQL 数据库并初始化全局 DB 变量。
+//
+// 参数:
+//
+//	ip - 数据库的IP地址。
+//	pwd - 数据库的密码。
+//	port - 数据库的端口号。
+//	name - 数据库的名称。
+//
+// 无返回值。
 func dbInit(ip, pwd, port, name string) {
 
+	// 构造数据库的连接字符串
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?charset=utf8mb4&parseTime=True&loc=Local", name, pwd, ip, port)
+
+	// 尝试使用提供的 DSN 连接到 MySQL 数据库
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		panic(err)
+		panic(err) // 如果连接失败，则中断程序
 	}
+
+	// 获取底层的 SQL DB 实例，以便进行更深层次的数据库连接配置
 	sqlDB, err := db.DB()
 	if err != nil {
-		panic(err)
+		panic(err) // 如果获取失败，则中断程序
 	}
+
+	// 配置数据库连接池的最大打开连接数和最大空闲连接数
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
+
+	// 全局变量 DB 被赋值为初始化好的数据库连接实例
 	DB = db
 }
 
@@ -349,8 +369,18 @@ func callClear() {
 	}
 }
 
+// showFrequentlySql 显示MySQL中最常执行的SQL语句分析。
+//
+// 参数:
+//
+//	top - 指定要显示的最常执行SQL的数量。
+//
+// 此函数会检查 performance_schema 是否启用，如果未启用则给出提示并返回。
+// 否则，它将从 performance_schema 获取最常执行的SQL语句及其相关信息，
+// 并以表格形式打印出来，包括执行语句、数据库名、最近执行时间、执行总次数、最大执行时间和平均执行时间。
 func showFrequentlySql(top string) {
 
+	// 检查 performance_schema 是否已启用
 	var isPerformanceSchema int
 	DB.Raw("SELECT @@performance_schema").Scan(&isPerformanceSchema)
 
@@ -360,9 +390,11 @@ func showFrequentlySql(top string) {
 		return
 	}
 
+	// 设置 SQL 语句截断长度
 	DB.Exec("SET @sys.statement_truncate_len = 1024")
-	rows, err :=
-		DB.Raw("select query,db,last_seen,exec_count,max_latency,avg_latency from sys.statement_analysis order by exec_count desc,last_seen desc limit @top", sql.Named("top", top)).Rows()
+
+	// 查询最常执行的SQL信息
+	rows, err := DB.Raw("select query,db,last_seen,exec_count,max_latency,avg_latency from sys.statement_analysis order by exec_count desc,last_seen desc limit @top", sql.Named("top", top)).Rows()
 	defer func(rows *sql.Rows) {
 		err := rows.Close()
 		if err != nil {
@@ -371,8 +403,10 @@ func showFrequentlySql(top string) {
 	}(rows)
 	if err != nil {
 		fmt.Println(err)
+		return
 	}
-	// 表格
+
+	// 创建表格并填充数据
 	tw := table.NewWriter()
 	tw.SetTitle("Query Analysis")
 	tw.SetStyle(table.Style{
@@ -396,6 +430,8 @@ func showFrequentlySql(top string) {
 		dateFormat := timex.New(lastSeen.Time).DateFormat(timex.TemplateWithMs3)
 		tw.AppendRow(table.Row{query.String, db.String, dateFormat, execCount.String, maxLatency.String, avgLatency.String})
 	}
+
+	// 打印表格
 	fmt.Println(tw.Render())
 }
 
@@ -447,6 +483,12 @@ func showFrequentlyIo(ioV string) {
 	fmt.Println(tw.Render())
 }
 
+// showLockSql 显示当前数据库中的锁阻塞信息，并根据kill参数决定是否杀死阻塞的查询。
+// 参数:
+//
+//	kill - 布尔值，指示是否执行KILL命令来终止阻塞的SQL查询。
+//
+// 无返回值。
 func showLockSql(kill bool) {
 
 	rows, err := DB.Raw(`SELECT 
@@ -734,4 +776,73 @@ func showTableInfo() {
 		tw.AppendRow(table.Row{tableSchema.String, tableName.String, engine.String, dataLength.String, indexLength.String, totalLength.String, columnName.String, columnType.String, autoIncrement.String, residualAutoIncrement})
 	}
 	fmt.Println(tw.Render())
+}
+
+func showFpkInfo() {
+
+	rows, err :=
+		DB.Raw(`SELECT t.table_schema,
+               t.table_name
+        FROM information_schema.tables t
+        LEFT JOIN information_schema.key_column_usage k
+             ON t.table_schema = k.table_schema
+                AND t.table_name = k.table_name
+                AND k.constraint_name = 'PRIMARY'
+        WHERE t.table_schema NOT IN ('mysql', 'information_schema', 'sys', 'performance_schema')
+          AND k.constraint_name IS NULL
+          AND t.table_type = 'BASE TABLE'`).Rows()
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}(rows)
+	if err != nil {
+		fmt.Println(err)
+	}
+	// 表格
+	tw := table.NewWriter()
+	tw.SetTitle("Find out no primary key")
+	tw.SetStyle(table.Style{
+		Name:    "StyleDefault",
+		Box:     table.StyleBoxDefault,
+		Color:   table.ColorOptionsDefault,
+		Format:  table.FormatOptionsDefault,
+		HTML:    table.DefaultHTMLOptions,
+		Options: table.OptionsDefault,
+		Title:   table.TitleOptions{Align: text.AlignCenter},
+	})
+	tw.AppendHeader(table.Row{"库名", "表名"})
+
+	for rows.Next() {
+		var tableSchema, tableName sql.NullString
+		err := rows.Scan(&tableSchema, &tableName)
+		if err != nil {
+			fmt.Println(err)
+		}
+		tw.AppendRow(table.Row{tableSchema.String, tableName.String})
+	}
+	fmt.Println(tw.Render())
+}
+
+func showDeadlockInfo() {
+
+	row :=
+		DB.Raw(`SHOW ENGINE INNODB STATUS`).Row()
+
+	var t, name, status sql.NullString
+	err := row.Scan(&t, &name, &status)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	re := regexp.MustCompile(`(?s)LATEST DETECTED DEADLOCK.*?WE ROLL BACK TRANSACTION\s+\(\d+\)`)
+	match := re.FindString(status.String)
+
+	if strutil.IsNotBlank(match) {
+		fmt.Println("------------------------")
+		fmt.Println(match)
+		fmt.Println("------------------------")
+	}
 }
