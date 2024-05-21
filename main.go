@@ -10,6 +10,7 @@ import (
 	"github.com/gookit/goutil/timex"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/mitchellh/go-wordwrap"
 	"github.com/urfave/cli/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -439,7 +440,11 @@ func showFrequentlySql(top string) {
 			fmt.Println(err)
 		}
 		dateFormat := timex.New(lastSeen.Time).DateFormat(timex.TemplateWithMs3)
-		tw.AppendRow(table.Row{query.String, db.String, dateFormat, execCount.String, maxLatency.String, avgLatency.String})
+
+		wrappedQuery := wordwrap.WrapString(query.String, 70)
+		wrappedLastSeen := wordwrap.WrapString(dateFormat, 15)
+
+		tw.AppendRow(table.Row{wrappedQuery, db.String, wrappedLastSeen, execCount.String, maxLatency.String, avgLatency.String})
 	}
 
 	// 打印表格
@@ -486,10 +491,13 @@ func showFrequentlyIo(ioV string) {
 	for rows.Next() {
 		var file, countRead, totalRead, countWrite, totalWritten, total sql.NullString
 		err := rows.Scan(&file, &countRead, &totalRead, &countWrite, &totalWritten, &total)
+
+		wrappedFile := wordwrap.WrapString(file.String, 70)
+
 		if err != nil {
 			fmt.Println(err)
 		}
-		tw.AppendRow(table.Row{file.String, countRead.String, totalRead.String, countWrite.String, totalWritten.String, total.String})
+		tw.AppendRow(table.Row{wrappedFile, countRead.String, totalRead.String, countWrite.String, totalWritten.String, total.String})
 	}
 	fmt.Println(tw.Render())
 }
@@ -546,8 +554,16 @@ func showLockSql(kill bool) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		tw.AppendRow(table.Row{trxId.String, trxState.String, trxStarted.String, processlistId.String, info.String, user.String, host.String,
-			db.String, command.String, state.String, sqlKillBlockingQuery.String})
+
+		wrappedTrxId := wordwrap.WrapString(trxId.String, 10)
+		wrappedTrxStarted := wordwrap.WrapString(trxStarted.String, 10)
+		wrappedInfo := wordwrap.WrapString(info.String, 30)
+		wrappedHost := wordwrap.WrapString(host.String, 10)
+		wrappedState := wordwrap.WrapString(state.String, 10)
+		wrappedSqlKillBlockingQuery := wordwrap.WrapString(sqlKillBlockingQuery.String, 10)
+
+		tw.AppendRow(table.Row{wrappedTrxId, trxState.String, wrappedTrxStarted, processlistId.String, wrappedInfo, user.String, wrappedHost,
+			db.String, command.String, wrappedState, wrappedSqlKillBlockingQuery})
 	}
 	fmt.Println(tw.Render())
 
@@ -784,7 +800,12 @@ func showTableInfo() {
 		if strutil.IsBlank(autoIncrement.String) {
 			residualAutoIncrement = "主键非自增"
 		}
-		tw.AppendRow(table.Row{tableSchema.String, tableName.String, engine.String, dataLength.String, indexLength.String, totalLength.String, columnName.String, columnType.String, autoIncrement.String, residualAutoIncrement})
+
+		wrappedTableName := wordwrap.WrapString(tableName.String, 20)
+		wrappedColumnType := wordwrap.WrapString(columnType.String, 10)
+		wrappedAutoIncrement := wordwrap.WrapString(tableName.String, 20)
+		wrappedResidualAutoIncrement := wordwrap.WrapString(residualAutoIncrement, 20)
+		tw.AppendRow(table.Row{tableSchema.String, wrappedTableName, engine.String, dataLength.String, indexLength.String, totalLength.String, columnName.String, wrappedColumnType, wrappedAutoIncrement, wrappedResidualAutoIncrement})
 	}
 	fmt.Println(tw.Render())
 }
@@ -905,8 +926,18 @@ func showUncommitSql(timeLimit string, kill bool) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		tw.AppendRow(table.Row{id.String, user.String, host.String, db.String, command.String, execTime.String, uncommitTransaction.String,
-			killId.String})
+
+		wrappedId := wordwrap.WrapString(id.String, 10)
+		wrappedUser := wordwrap.WrapString(user.String, 15)
+		wrappedHost := wordwrap.WrapString(host.String, 10)
+		wrappedDb := wordwrap.WrapString(db.String, 10)
+		wrappedCommand := wordwrap.WrapString(command.String, 10)
+		wrappedExecTime := wordwrap.WrapString(execTime.String, 10)
+		wrappedUnct := wordwrap.WrapString(uncommitTransaction.String, 30)
+		wrappedSqlKillBlockingQuery := wordwrap.WrapString(killId.String, 10)
+
+		tw.AppendRow(table.Row{wrappedId, wrappedUser, wrappedHost, wrappedDb, wrappedCommand, wrappedExecTime, wrappedUnct,
+			wrappedSqlKillBlockingQuery})
 	}
 	fmt.Println(tw.Render())
 
