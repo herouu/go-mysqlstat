@@ -1,5 +1,7 @@
 ## mysqlstat golang语言版本
 
+👉 各位如果有什么拓展的点子欢迎提issue
+
 参考：
 https://github.com/hcymysql/mysqlstat
 
