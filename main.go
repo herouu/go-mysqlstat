@@ -6,6 +6,8 @@ import (
 	"github.com/duke-git/lancet/v2/convertor"
 	list "github.com/duke-git/lancet/v2/datastructure/list"
 	"github.com/duke-git/lancet/v2/datetime"
+	"github.com/go-mysql-org/go-mysql/canal"
+	cm "github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/gookit/goutil/strutil"
 	"github.com/gookit/goutil/timex"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -14,11 +16,14 @@ import (
 	"github.com/urfave/cli/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"regexp"
 	"runtime"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -139,7 +144,7 @@ func main() {
 			Usage:    "查看死锁信息",
 			Required: false,
 		},
-		&cli.BoolFlag{
+		&cli.StringSliceFlag{
 			Name:     "binlog",
 			Usage:    "Binlog分析-高峰期排查哪些表TPS比较高",
 			Required: false,
@@ -179,6 +184,7 @@ func ctrlAction(context *cli.Context) error {
 	fpk := context.Bool("fpk")
 	dead := context.Bool("dead")
 	uncommitV := context.String("uncommit")
+	binlog := context.StringSlice("binlog")
 
 	if strutil.IsNotBlank(topV) {
 		showFrequentlySql(topV)
@@ -204,11 +210,117 @@ func ctrlAction(context *cli.Context) error {
 		showFpkInfo()
 	} else if dead {
 		showDeadlockInfo()
+	} else if len(binlog) > 0 {
+		analyzeBinlog(ip, port, name, pwd, binlog)
 	} else {
 		mysqlStatusMonitor()
 	}
 	return nil
 
+}
+
+type MyEventHandler struct {
+	canal.DummyEventHandler
+	tableCount map[string]map[string]int
+}
+
+func (h *MyEventHandler) OnRow(e *canal.RowsEvent) error {
+	tableName := strings.ToLower(e.Table.Name)
+	switch e.Action {
+	case canal.InsertAction:
+		for range e.Rows {
+			incrementTableCount(h.tableCount, tableName, "insert")
+			fmt.Println(h.tableCount)
+		}
+	case canal.UpdateAction:
+		for range e.Rows {
+			incrementTableCount(h.tableCount, tableName, "update")
+		}
+	case canal.DeleteAction:
+		for range e.Rows {
+			incrementTableCount(h.tableCount, tableName, "delete")
+		}
+	}
+	return nil
+}
+
+func (h *MyEventHandler) String() string {
+	return "MyEventHandler"
+}
+
+func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPassword string, binlogList []string) {
+	cfg := canal.NewDefaultConfig()
+	cfg.Dump.ExecutionPath = ""
+	cfg.Addr = fmt.Sprintf("%s:%s", mysqlIP, mysqlPort)
+	cfg.User = mysqlUser
+	cfg.Password = mysqlPassword
+	cfg.ServerID = 123456789 // 需要是一个唯一的ID
+
+	c, err := canal.NewCanal(cfg)
+	if err != nil {
+		log.Fatalf("failed to create canal instance: %v", err)
+	}
+
+	defer c.Close()
+
+	tableCounts := make(map[string]map[string]int)
+
+	startFile := ""
+	switch len(binlogList) {
+	case 1:
+		startFile = binlogList[0]
+	case 2:
+		startFile = binlogList[0]
+	default:
+		fmt.Println("只能指定一个或者两个binlog文件。")
+		os.Exit(0)
+	}
+
+	pos := cm.Position{
+		Name: startFile,
+		Pos:  4, // 或者根据实际情况设置
+	}
+
+	c.SetEventHandler(&MyEventHandler{tableCount: tableCounts})
+	err = c.RunFrom(pos)
+	if err != nil {
+		log.Fatalf("failed to start canal from position: %v", err)
+	}
+	fmt.Errorf("zhixing %s", "结束")
+
+	// 按照操作次数排序输出最终结果
+	var sortedTableCounts []struct {
+		TableName string
+		Counts    map[string]int
+	}
+	for table, counts := range tableCounts {
+		sortedTableCounts = append(sortedTableCounts, struct {
+			TableName string
+			Counts    map[string]int
+		}{table, counts})
+	}
+	sort.Slice(sortedTableCounts, func(i, j int) bool {
+		return sumCounts(sortedTableCounts[i].Counts) > sumCounts(sortedTableCounts[j].Counts)
+	})
+
+	for _, item := range sortedTableCounts {
+		fmt.Printf("%s: %+v\n", item.TableName, item.Counts)
+	}
+}
+
+func incrementTableCount(counts map[string]map[string]int, table string, action string) {
+	if counts[table] == nil {
+		counts[table] = make(map[string]int)
+	}
+	counts[table][action]++
+}
+
+func sumCounts(counts map[string]int) int {
+	sum := 0
+	for _, count := range counts {
+		sum += count
+	}
+	return sum
 }
 
 func mysqlStatusMonitor() {
