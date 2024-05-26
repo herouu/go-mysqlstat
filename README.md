@@ -54,3 +54,15 @@ GLOBAL OPTIONS:
    --version, -v                     print the version
 
 ```
+
+-- binlog
+
+```text
+SHOW VARIABLES LIKE 'binlog_row_metadata'; 
+SHOW VARIABLES LIKE 'binlog_format';
+
+
+binlog_format 需设置为ROW
+binlog_row_metadata 需设置为 FULL
+
+```

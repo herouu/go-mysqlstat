@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"github.com/duke-git/lancet/v2/convertor"
@@ -8,6 +9,7 @@ import (
 	"github.com/duke-git/lancet/v2/datetime"
 	"github.com/go-mysql-org/go-mysql/canal"
 	cm "github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/gookit/goutil/strutil"
 	"github.com/gookit/goutil/timex"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -16,13 +18,13 @@ import (
 	"github.com/urfave/cli/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -249,19 +251,19 @@ func (h *MyEventHandler) String() string {
 }
 
 func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPassword string, binlogList []string) {
-	cfg := canal.NewDefaultConfig()
-	cfg.Dump.ExecutionPath = ""
-	cfg.Addr = fmt.Sprintf("%s:%s", mysqlIP, mysqlPort)
-	cfg.User = mysqlUser
-	cfg.Password = mysqlPassword
-	cfg.ServerID = 123456789 // 需要是一个唯一的ID
-
-	c, err := canal.NewCanal(cfg)
-	if err != nil {
-		log.Fatalf("failed to create canal instance: %v", err)
+	parseUint, err2 := strconv.ParseUint(mysqlPort, 10, 16)
+	if err2 != nil {
+		panic(err2)
 	}
-
-	defer c.Close()
+	cfg := replication.BinlogSyncerConfig{
+		ServerID: 123456789,
+		Flavor:   "mysql",
+		Host:     mysqlIP,
+		Port:     uint16(parseUint),
+		User:     mysqlUser,
+		Password: mysqlPassword,
+	}
+	syncer := replication.NewBinlogSyncer(cfg)
 
 	tableCounts := make(map[string]map[string]int)
 
@@ -281,12 +283,37 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 		Pos:  4, // 或者根据实际情况设置
 	}
 
-	c.SetEventHandler(&MyEventHandler{tableCount: tableCounts})
-	err = c.RunFrom(pos)
-	if err != nil {
-		log.Fatalf("failed to start canal from position: %v", err)
+	streamer, _ := syncer.StartSync(pos)
+
+	for {
+		ev, _ := streamer.GetEvent(context.Background())
+		// Dump event
+		event := ev.Event
+		header := ev.Header
+
+		switch header.EventType {
+		case replication.TABLE_MAP_EVENT:
+			event := event.(*replication.TableMapEvent)
+			event.Dump(os.Stdout)
+		case replication.WRITE_ROWS_EVENTv2:
+			rowsEvent := event.(*replication.RowsEvent)
+			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+			rowsEvent.Dump(os.Stdout)
+		case replication.UPDATE_ROWS_EVENTv2:
+			rowsEvent := event.(*replication.RowsEvent)
+
+			fmt.Printf("%v\n", rowsEvent.Table.Schema)
+			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+			rowsEvent.Dump(os.Stdout)
+		case replication.DELETE_ROWS_EVENTv2:
+			rowsEvent := event.(*replication.RowsEvent)
+			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+			rowsEvent.Dump(os.Stdout)
+		default:
+
+		}
+		//ev.Dump(os.Stdout)
 	}
-	fmt.Errorf("zhixing %s", "结束")
 
 	// 按照操作次数排序输出最终结果
 	var sortedTableCounts []struct {
@@ -306,6 +333,16 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	for _, item := range sortedTableCounts {
 		fmt.Printf("%s: %+v\n", item.TableName, item.Counts)
 	}
+}
+
+func handleQueryEvent(e *replication.BinlogEvent) {
+	queryEvent, ok := e.Event.(*replication.QueryEvent)
+	if !ok {
+		return
+	}
+
+	sql := queryEvent.Query
+	fmt.Println("SQL Statement:", sql)
 }
 
 func incrementTableCount(counts map[string]map[string]int, table string, action string) {
@@ -553,7 +590,7 @@ func showFrequentlySql(top string) {
 		}
 		dateFormat := timex.New(lastSeen.Time).DateFormat(timex.TemplateWithMs3)
 
-		wrappedQuery := wordwrap.WrapString(query.String, 70)
+		wrappedQuery := wordwrap.WrapString(query.String, 60)
 		wrappedLastSeen := wordwrap.WrapString(dateFormat, 15)
 
 		tw.AppendRow(table.Row{wrappedQuery, db.String, wrappedLastSeen, execCount.String, maxLatency.String, avgLatency.String})
@@ -604,7 +641,7 @@ func showFrequentlyIo(ioV string) {
 		var file, countRead, totalRead, countWrite, totalWritten, total sql.NullString
 		err := rows.Scan(&file, &countRead, &totalRead, &countWrite, &totalWritten, &total)
 
-		wrappedFile := wordwrap.WrapString(file.String, 70)
+		wrappedFile := wordwrap.WrapString(file.String, 60)
 
 		if err != nil {
 			fmt.Println(err)
