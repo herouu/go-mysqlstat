@@ -7,7 +7,6 @@ import (
 	"github.com/duke-git/lancet/v2/convertor"
 	list "github.com/duke-git/lancet/v2/datastructure/list"
 	"github.com/duke-git/lancet/v2/datetime"
-	"github.com/go-mysql-org/go-mysql/canal"
 	cm "github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/gookit/goutil/strutil"
@@ -25,7 +24,6 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -221,35 +219,6 @@ func ctrlAction(context *cli.Context) error {
 
 }
 
-type MyEventHandler struct {
-	canal.DummyEventHandler
-	tableCount map[string]map[string]int
-}
-
-func (h *MyEventHandler) OnRow(e *canal.RowsEvent) error {
-	tableName := strings.ToLower(e.Table.Name)
-	switch e.Action {
-	case canal.InsertAction:
-		for range e.Rows {
-			incrementTableCount(h.tableCount, tableName, "insert")
-			fmt.Println(h.tableCount)
-		}
-	case canal.UpdateAction:
-		for range e.Rows {
-			incrementTableCount(h.tableCount, tableName, "update")
-		}
-	case canal.DeleteAction:
-		for range e.Rows {
-			incrementTableCount(h.tableCount, tableName, "delete")
-		}
-	}
-	return nil
-}
-
-func (h *MyEventHandler) String() string {
-	return "MyEventHandler"
-}
-
 func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPassword string, binlogList []string) {
 	parseUint, err2 := strconv.ParseUint(mysqlPort, 10, 16)
 	if err2 != nil {
@@ -264,9 +233,6 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 		Password: mysqlPassword,
 	}
 	syncer := replication.NewBinlogSyncer(cfg)
-
-	tableCounts := make(map[string]map[string]int)
-
 	startFile := ""
 	switch len(binlogList) {
 	case 1:
@@ -285,36 +251,43 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 
 	streamer, _ := syncer.StartSync(pos)
 
-	for {
-		ev, _ := streamer.GetEvent(context.Background())
-		// Dump event
-		event := ev.Event
-		header := ev.Header
-
-		switch header.EventType {
-		case replication.TABLE_MAP_EVENT:
-			event := event.(*replication.TableMapEvent)
-			event.Dump(os.Stdout)
-		case replication.WRITE_ROWS_EVENTv2:
-			rowsEvent := event.(*replication.RowsEvent)
-			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-			rowsEvent.Dump(os.Stdout)
-		case replication.UPDATE_ROWS_EVENTv2:
-			rowsEvent := event.(*replication.RowsEvent)
-
-			fmt.Printf("%v\n", rowsEvent.Table.Schema)
-			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-			rowsEvent.Dump(os.Stdout)
-		case replication.DELETE_ROWS_EVENTv2:
-			rowsEvent := event.(*replication.RowsEvent)
-			fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-			rowsEvent.Dump(os.Stdout)
-		default:
-
+	tableCounts := make(map[string]map[string]int)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	go func() {
+		for {
+			ev, err := streamer.GetEvent(ctx)
+			if err != nil {
+				return
+			}
+			// Dump event
+			event := ev.Event
+			header := ev.Header
+			switch header.EventType {
+			case replication.TABLE_MAP_EVENT:
+				//event := event.(*replication.TableMapEvent)
+				//event.Dump(os.Stdout)
+			case replication.WRITE_ROWS_EVENTv2:
+				rowsEvent := event.(*replication.RowsEvent)
+				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+				//rowsEvent.Dump(os.Stdout)
+				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "insert")
+			case replication.UPDATE_ROWS_EVENTv2:
+				rowsEvent := event.(*replication.RowsEvent)
+				fmt.Printf("%v\n", rowsEvent.Table.Schema)
+				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+				//rowsEvent.Dump(os.Stdout)
+				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "update")
+			case replication.DELETE_ROWS_EVENTv2:
+				rowsEvent := event.(*replication.RowsEvent)
+				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
+				//rowsEvent.Dump(os.Stdout)
+				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "delete")
+			default:
+			}
 		}
-		//ev.Dump(os.Stdout)
-	}
-
+	}()
+	time.Sleep(10 * time.Second)
+	cancelFunc()
 	// 按照操作次数排序输出最终结果
 	var sortedTableCounts []struct {
 		TableName string
@@ -333,16 +306,6 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	for _, item := range sortedTableCounts {
 		fmt.Printf("%s: %+v\n", item.TableName, item.Counts)
 	}
-}
-
-func handleQueryEvent(e *replication.BinlogEvent) {
-	queryEvent, ok := e.Event.(*replication.QueryEvent)
-	if !ok {
-		return
-	}
-
-	sql := queryEvent.Query
-	fmt.Println("SQL Statement:", sql)
 }
 
 func incrementTableCount(counts map[string]map[string]int, table string, action string) {
