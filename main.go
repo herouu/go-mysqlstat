@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"github.com/duke-git/lancet/v2/convertor"
@@ -224,15 +223,17 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	if err2 != nil {
 		panic(err2)
 	}
-	cfg := replication.BinlogSyncerConfig{
-		ServerID: 123456789,
-		Flavor:   "mysql",
-		Host:     mysqlIP,
-		Port:     uint16(parseUint),
-		User:     mysqlUser,
-		Password: mysqlPassword,
+	cfg := BinlogSyncerConfig{
+		ServerID:        123456789,
+		Flavor:          "mysql",
+		Host:            mysqlIP,
+		Port:            uint16(parseUint),
+		User:            mysqlUser,
+		Password:        mysqlPassword,
+		DumpCommandFlag: uint16(1),
 	}
-	syncer := replication.NewBinlogSyncer(cfg)
+
+	syncer := NewBinlogSyncer(cfg)
 	startFile := ""
 	switch len(binlogList) {
 	case 1:
@@ -252,10 +253,10 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	streamer, _ := syncer.StartSync(pos)
 
 	tableCounts := make(map[string]map[string]int)
-	ctx, cancelFunc := context.WithCancel(context.Background())
+
 	go func() {
 		for {
-			ev, err := streamer.GetEvent(ctx)
+			ev, err := streamer.GetEvent(syncer.ctx)
 			if err != nil {
 				return
 			}
@@ -263,31 +264,20 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 			event := ev.Event
 			header := ev.Header
 			switch header.EventType {
-			case replication.TABLE_MAP_EVENT:
-				//event := event.(*replication.TableMapEvent)
-				//event.Dump(os.Stdout)
-			case replication.WRITE_ROWS_EVENTv2:
+			case replication.WRITE_ROWS_EVENTv2, replication.WRITE_ROWS_EVENTv1:
 				rowsEvent := event.(*replication.RowsEvent)
-				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-				//rowsEvent.Dump(os.Stdout)
 				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "insert")
-			case replication.UPDATE_ROWS_EVENTv2:
+			case replication.UPDATE_ROWS_EVENTv2, replication.UPDATE_ROWS_EVENTv1:
 				rowsEvent := event.(*replication.RowsEvent)
-				fmt.Printf("%v\n", rowsEvent.Table.Schema)
-				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-				//rowsEvent.Dump(os.Stdout)
 				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "update")
-			case replication.DELETE_ROWS_EVENTv2:
+			case replication.DELETE_ROWS_EVENTv2, replication.DELETE_ROWS_EVENTv1:
 				rowsEvent := event.(*replication.RowsEvent)
-				fmt.Printf("事件：%s table: %s\n", header.EventType, rowsEvent.Table.Table)
-				//rowsEvent.Dump(os.Stdout)
 				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "delete")
 			default:
 			}
 		}
 	}()
-	time.Sleep(10 * time.Second)
-	cancelFunc()
+	<-syncer.ctx.Done()
 	// 按照操作次数排序输出最终结果
 	var sortedTableCounts []struct {
 		TableName string
@@ -304,13 +294,17 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	})
 
 	for _, item := range sortedTableCounts {
-		fmt.Printf("%s: %+v\n", item.TableName, item.Counts)
+		json, _ := convertor.ToJson(item.Counts)
+		fmt.Printf("%s: %s\n\n", item.TableName, json)
 	}
 }
 
 func incrementTableCount(counts map[string]map[string]int, table string, action string) {
 	if counts[table] == nil {
 		counts[table] = make(map[string]int)
+		counts[table]["insert"] = 0
+		counts[table]["update"] = 0
+		counts[table]["delete"] = 0
 	}
 	counts[table][action]++
 }
