@@ -231,8 +231,11 @@ func (b *BinlogSyncer) close() {
 		// doesn't actually disconnect it.
 		c, err := b.newConnection(context.Background())
 		if err == nil {
-			b.killConnection(c, b.lastConnectionID)
-			c.Close()
+			//b.killConnection(c, b.lastConnectionID)
+			err := c.Close()
+			if err != nil {
+				return
+			}
 		}
 	}
 

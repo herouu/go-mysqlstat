@@ -13,6 +13,7 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/mitchellh/go-wordwrap"
+	"github.com/siddontang/go-log/log"
 	"github.com/urfave/cli/v2"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -223,6 +225,12 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	if err2 != nil {
 		panic(err2)
 	}
+
+	handler, err2 := log.NewNullHandler()
+	if err2 != nil {
+		panic(err2)
+	}
+
 	cfg := BinlogSyncerConfig{
 		ServerID:        123456789,
 		Flavor:          "mysql",
@@ -231,53 +239,66 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 		User:            mysqlUser,
 		Password:        mysqlPassword,
 		DumpCommandFlag: uint16(1),
+		Logger:          log.NewDefault(handler),
 	}
+	var binlogStart, binlogEnd string
 
-	syncer := NewBinlogSyncer(cfg)
-	startFile := ""
 	switch len(binlogList) {
 	case 1:
-		startFile = binlogList[0]
+		binlogStart = binlogList[0]
 	case 2:
-		startFile = binlogList[0]
+		binlogStart, binlogEnd = binlogList[0], binlogList[1]
 	default:
 		fmt.Println("只能指定一个或者两个binlog文件。")
 		os.Exit(0)
 	}
 
-	pos := cm.Position{
-		Name: startFile,
-		Pos:  4, // 或者根据实际情况设置
+	startIndex := parseBinlogIndex(binlogStart)
+
+	if strutil.IsBlank(binlogEnd) {
+		binlogEnd = binlogStart
 	}
 
-	streamer, _ := syncer.StartSync(pos)
+	endIndex := parseBinlogIndex(binlogEnd)
+
+	logFiles := generateLogFileNames(binlogStart, startIndex, endIndex)
+
+	fmt.Printf("process binlog files is : %v\n", logFiles)
 
 	tableCounts := make(map[string]map[string]int)
+	for _, logFile := range logFiles {
+		syncer := NewBinlogSyncer(cfg)
 
-	go func() {
-		for {
-			ev, err := streamer.GetEvent(syncer.ctx)
-			if err != nil {
-				return
+		streamer, _ := syncer.StartSync(cm.Position{
+			Name: logFile,
+			Pos:  4, // 或者根据实际情况设置
+		})
+		go func() {
+			for {
+				ev, err := streamer.GetEvent(syncer.ctx)
+				if err != nil {
+					return
+				}
+				// Dump event
+				event := ev.Event
+				header := ev.Header
+				switch header.EventType {
+				case replication.WRITE_ROWS_EVENTv2, replication.WRITE_ROWS_EVENTv1:
+					rowsEvent := event.(*replication.RowsEvent)
+					incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "insert")
+				case replication.UPDATE_ROWS_EVENTv2, replication.UPDATE_ROWS_EVENTv1:
+					rowsEvent := event.(*replication.RowsEvent)
+					incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "update")
+				case replication.DELETE_ROWS_EVENTv2, replication.DELETE_ROWS_EVENTv1:
+					rowsEvent := event.(*replication.RowsEvent)
+					incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "delete")
+				default:
+				}
 			}
-			// Dump event
-			event := ev.Event
-			header := ev.Header
-			switch header.EventType {
-			case replication.WRITE_ROWS_EVENTv2, replication.WRITE_ROWS_EVENTv1:
-				rowsEvent := event.(*replication.RowsEvent)
-				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "insert")
-			case replication.UPDATE_ROWS_EVENTv2, replication.UPDATE_ROWS_EVENTv1:
-				rowsEvent := event.(*replication.RowsEvent)
-				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "update")
-			case replication.DELETE_ROWS_EVENTv2, replication.DELETE_ROWS_EVENTv1:
-				rowsEvent := event.(*replication.RowsEvent)
-				incrementTableCount(tableCounts, fmt.Sprintf("%s", rowsEvent.Table.Table), "delete")
-			default:
-			}
-		}
-	}()
-	<-syncer.ctx.Done()
+		}()
+		<-syncer.ctx.Done()
+	}
+
 	// 按照操作次数排序输出最终结果
 	var sortedTableCounts []struct {
 		TableName string
@@ -297,6 +318,31 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 		json, _ := convertor.ToJson(item.Counts)
 		fmt.Printf("%s: %s\n\n", item.TableName, json)
 	}
+}
+
+// generateLogFileNames 生成从起始到结束（包含两端）的所有binlog文件名列表。
+func generateLogFileNames(binlogStart string, startIndex, endIndex int) []string {
+	var logFiles []string
+
+	// 提取文件基本名和扩展名
+	baseName := strings.Split(binlogStart, ".")[0]
+	//ext := strings.Split(binlogStart, ".")[1]
+
+	for i := startIndex; i <= endIndex; i++ {
+		// 格式化文件名，确保索引位数为6位，前面补零
+		formattedIndex := fmt.Sprintf("%06d", i)
+		fileName := fmt.Sprintf("%s.%s", baseName, formattedIndex)
+		logFiles = append(logFiles, fileName)
+	}
+
+	return logFiles
+}
+
+func parseBinlogIndex(filename string) int {
+	re := regexp.MustCompile(`\d+`)
+	match := re.FindString(filename)
+	index, _ := strconv.Atoi(match)
+	return index
 }
 
 func incrementTableCount(counts map[string]map[string]int, table string, action string) {
