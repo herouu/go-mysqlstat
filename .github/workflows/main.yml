@@ -2,7 +2,11 @@ name: Go Release Binaries
 
 on:
   release:
-    types: [ published,prereleased,released,edited ] # 表示在创建新的 Release 时触发
+    types: [ published] # 表示在创建新的 Release 时触发
+  push:
+    branches:
+      - master
+      - main
 
 permissions:
   contents: write
