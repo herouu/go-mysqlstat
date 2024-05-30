@@ -186,6 +186,7 @@ func ctrlAction(context *cli.Context) error {
 	dead := context.Bool("dead")
 	uncommitV := context.String("uncommit")
 	binlog := context.StringSlice("binlog")
+	repl := context.Bool("repl")
 
 	if strutil.IsNotBlank(topV) {
 		showFrequentlySql(topV)
@@ -213,6 +214,8 @@ func ctrlAction(context *cli.Context) error {
 		showDeadlockInfo()
 	} else if len(binlog) > 0 {
 		analyzeBinlog(ip, port, name, pwd, binlog)
+	} else if repl {
+		replicationStatus(ip, port)
 	} else {
 		mysqlStatusMonitor()
 	}
@@ -232,7 +235,7 @@ func analyzeBinlog(mysqlIP string, mysqlPort string, mysqlUser string, mysqlPass
 	}
 
 	cfg := BinlogSyncerConfig{
-		ServerID:        123456789,
+		ServerID:        123456 & 89,
 		Flavor:          "mysql",
 		Host:            mysqlIP,
 		Port:            uint16(parseUint),
@@ -1132,4 +1135,117 @@ func showUncommitSql(timeLimit string, kill bool) {
 			fmt.Printf("已成功执行 %s\n", sqlKill)
 		})
 	}
+}
+
+func replicationStatus(ip, port string) {
+	checkReplStatus(ip, port)
+	getSlaveStatus()
+}
+
+func checkReplStatus(host, port string) {
+	var version string
+	DB.Raw("select version()").Scan(&version)
+	fmt.Printf("数据库版本 %s\n", version)
+	// mysql8.4
+	var slaveHostSql, slaveStatusSql string
+	if strutil.Compare(version, "8.4.0", "<") {
+		slaveHostSql = "SHOW SLAVE HOSTS"
+		slaveStatusSql = "SHOW SLAVE STATUS"
+		rows, err := DB.Raw(slaveHostSql).Rows()
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		newList := list.NewList([]map[string]string{})
+		for rows.Next() {
+			var serverId, host, port, masterId, slaveUuid sql.NullString
+			err := rows.Scan(&serverId, &host, &port, &masterId, &slaveUuid)
+			if err != nil {
+				fmt.Println(err)
+			}
+			m := map[string]string{"serverId": serverId.String, "host": host.String, "port": port.String}
+			newList.Push(m)
+		}
+		sqlRows, err := DB.Raw(slaveStatusSql).Rows()
+
+		newStatusList := list.NewList([]string{})
+		for sqlRows.Next() {
+			var slaveIoState, masterHost, masterUser, masterPort, connectRetry, masterLogFile, readMasterLogPos, relayLogFile, relayLogPos, relayMasterLogFile, slaveIoRunning, slaveSqlRunning, replicateDoDb, replicateIgnoreDb, replicateDoTable, replicateIgnoreTable, replicateWildDoTable, replicateWildIgnoreTable, lastErrno, lastError, skipCounter, execMasterLogPos, relayLogSpace, untilCondition, untilLogFile, untilLogPos, masterSslAllowed, masterSslCaFile, masterSslCaPath, masterSslCert, masterSslCipher, masterSslKey, secondsBehindMaster, masterSslVerifyServerCert,
+				lastIoErrno,
+				lastIoError,
+				lastSqlErrno,
+				lastSqlError,
+				replicateIgnoreServerIds,
+				masterServerId,
+				masterUuid,
+				masterInfoFile,
+				sqlDelay,
+				sqlRemainingDelay,
+				slaveSqlRunningState,
+				masterRetryCount,
+				masterBind,
+				lastIoErrorTimestamp,
+				lastSqlErrorTimestamp,
+				masterSslCrl,
+				masterSslCrlpath,
+				retrievedGtidSet,
+				executedGtidSet,
+				autoPosition,
+				replicateRewriteDb,
+				channelName,
+				masterTlsVersion,
+				masterPublicKeyPath,
+				getMasterPublicKey,
+				networkNamespace sql.NullString
+			err := rows.Scan(&slaveIoState, &masterHost, &masterUser, &masterPort,
+				&connectRetry, &masterLogFile, &readMasterLogPos, &relayLogFile, &relayLogPos,
+				&relayMasterLogFile, &slaveIoRunning, slaveSqlRunning, replicateDoDb, &replicateIgnoreDb,
+				&replicateDoTable, &replicateIgnoreTable, replicateWildDoTable, replicateWildIgnoreTable,
+				&lastErrno, &lastError, &skipCounter, execMasterLogPos, relayLogSpace, untilCondition,
+				&untilLogFile, &untilLogPos, &masterSslAllowed, &masterSslCaFile, &masterSslCaPath, &masterSslCert,
+				&masterSslCipher, &masterSslKey, &secondsBehindMaster, &masterSslVerifyServerCert,
+				&lastIoErrno,
+				&lastIoError,
+				&lastSqlErrno,
+				&lastSqlError,
+				&replicateIgnoreServerIds,
+				&masterServerId,
+				&masterUuid,
+				&masterInfoFile,
+				&sqlDelay,
+				&sqlRemainingDelay,
+				&slaveSqlRunningState,
+				&masterRetryCount,
+				&masterBind,
+				&lastIoErrorTimestamp,
+				&lastSqlErrorTimestamp,
+				&masterSslCrl,
+				&masterSslCrlpath,
+				&retrievedGtidSet,
+				&executedGtidSet,
+				&autoPosition,
+				&replicateRewriteDb,
+				&channelName,
+				&masterTlsVersion,
+				&masterPublicKeyPath,
+				&getMasterPublicKey,
+				&networkNamespace)
+			if err != nil {
+				fmt.Println(err)
+			}
+			newStatusList.Push(slaveIoState.String)
+		}
+
+		if (newList.Size() >= 1) && (newStatusList.Size() == 0) {
+			fmt.Printf("%s:%s - 这是一台主库.\n", host, port)
+			newList.ForEach(func(m map[string]string) {
+				fmt.Printf("   从库是：%s \n", m["host"])
+			})
+		}
+	}
+
+}
+
+func getSlaveStatus() {
+
 }
