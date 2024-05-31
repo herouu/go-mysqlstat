@@ -184,6 +184,7 @@ func ctrlAction(context *cli.Context) error {
 	tinfo := context.Bool("tinfo")
 	fpk := context.Bool("fpk")
 	dead := context.Bool("dead")
+	repl := context.Bool("repl")
 	uncommitV := context.String("uncommit")
 	binlog := context.StringSlice("binlog")
 
@@ -211,6 +212,9 @@ func ctrlAction(context *cli.Context) error {
 		showFpkInfo()
 	} else if dead {
 		showDeadlockInfo()
+	} else if repl {
+		checkReplStatus(ip, port)
+		getSlaveStatus()
 	} else if len(binlog) > 0 {
 		analyzeBinlog(ip, port, name, pwd, binlog)
 	} else {
@@ -1132,4 +1136,172 @@ func showUncommitSql(timeLimit string, kill bool) {
 			fmt.Printf("已成功执行 %s\n", sqlKill)
 		})
 	}
+}
+
+func checkReplStatus(host, port string) {
+	rows, err := DB.Raw("SHOW SLAVE HOSTS").Rows()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	var hostSlice []map[string]interface{}
+	hostList := list.NewList(hostSlice)
+	for rows.Next() {
+		var row map[string]interface{}
+		err := DB.ScanRows(rows, &row)
+		if err != nil {
+			return
+		}
+		hostList.Push(row)
+	}
+
+	statusRow, err1 := DB.Raw("SHOW SLAVE STATUS").Rows()
+	if err1 != nil {
+		fmt.Println(err1)
+		return
+	}
+	var statusSlice []map[string]interface{}
+	statusList := list.NewList(statusSlice)
+	for statusRow.Next() {
+		var row map[string]interface{}
+		err := DB.ScanRows(statusRow, &row)
+		if err != nil {
+			return
+		}
+		statusList.Push(row)
+	}
+
+	if hostList.Size() >= 1 && statusList.Size() == 0 {
+		hs, err := DB.Raw("select host from information_schema.processlist where command like '%Binlog Dump%'").Rows()
+		if err != nil {
+			return
+		}
+		var slaveHosts []map[string]interface{}
+		slaveHostList := list.NewList(slaveHosts)
+		for hs.Next() {
+			var row map[string]interface{}
+			err := DB.ScanRows(hs, &row)
+			if err != nil {
+				return
+			}
+			slaveHostList.Push(row)
+		}
+		fmt.Printf("%s:%s - 这是一台主库.\n", host, port)
+		slaveHostList.ForEach(func(m map[string]interface{}) {
+			value := convertor.ToString(m["host"])
+			slave := strutil.Split(value, ":")[0]
+			fmt.Printf(" +--%s(current slave)", slave)
+		})
+
+	} else if hostList.Size() == 0 && statusList.Size() == 1 {
+		var first, b = statusList.PopFirst()
+		if b {
+			fmt.Printf("%s:%s - 这是一台从库. 它与主库 %s:%d 进行复制.\n", host, port, (*first)["Master_Host"], (*first)["Master_Port"])
+		}
+	} else if hostList.Size() >= 1 && statusList.Size() == 1 {
+		var first, b = statusList.PopFirst()
+		if b {
+			fmt.Printf("%s:%s - 这是一台级联复制的从库.它与主库 %s:%s 进行复制.\n", host, port, (*first)["Master_Host"], (*first)["Master_Port"])
+		}
+
+		hs, err := DB.Raw("select host from information_schema.processlist where command like '%Binlog Dump%'").Rows()
+		if err != nil {
+			return
+		}
+		var slaveHosts []map[string]interface{}
+		slaveHostList := list.NewList(slaveHosts)
+		for hs.Next() {
+			var row map[string]interface{}
+			err := DB.ScanRows(hs, &row)
+			if err != nil {
+				return
+			}
+			slaveHostList.Push(row)
+		}
+		slaveHostList.ForEach(func(m map[string]interface{}) {
+			value := convertor.ToString(m["host"])
+			slave := strutil.Split(value, ":")[0]
+			fmt.Printf(" +--%s(二级从库)", slave)
+		})
+
+	} else {
+		fmt.Printf("%s:%s - 这台机器你没有设置主从复制.\n", host, port)
+	}
+}
+
+func getSlaveStatus() {
+	statusRow, err1 := DB.Raw("SHOW SLAVE STATUS").Rows()
+	if err1 != nil {
+		fmt.Println(err1)
+		return
+	}
+	var statusSlice []map[string]interface{}
+	statusList := list.NewList(statusSlice)
+	for statusRow.Next() {
+		var row map[string]interface{}
+		err := DB.ScanRows(statusRow, &row)
+		if err != nil {
+			return
+		}
+		statusList.Push(row)
+	}
+
+	if statusList.Size() == 1 {
+		first, b := statusList.PopFirst()
+		if b {
+			if (*first)["Slave_IO_Running"] == "Yes" && (*first)["Slave_SQL_Running"] == "Yes" {
+				toInt, err := convertor.ToInt((*first)["Seconds_Behind_Master"])
+				if err != nil {
+					return
+				}
+				if toInt == 0 {
+					fmt.Println("同步正常，无延迟.")
+				} else {
+					fmt.Printf("同步正常，但有延迟，延迟时间为：%d\n", (*first)["Seconds_Behind_Master"])
+				}
+			} else {
+				fmt.Printf("主从复制报错，请检查. Slave_IO_Running状态值是：%s |  Slave_SQL_Running状态值是：%s  \n\tLast_Error错误信息是：%s \n\n\tLast_SQL_Error错误信息是：%s\n",
+					(*first)["Slave_IO_Running"], (*first)["Slave_SQL_Running"],
+					(*first)["Last_Error"], (*first)["Last_SQL_Error"])
+				rows, err := DB.Raw(`
+				SELECT
+					LAST_ERROR_NUMBER,
+					LAST_ERROR_MESSAGE,
+					LAST_ERROR_TIMESTAMP 
+				FROM
+					performance_schema.replication_applier_status_by_worker 
+				ORDER BY
+					LAST_ERROR_TIMESTAMP DESC 
+					LIMIT 1`).Rows()
+
+				if err != nil {
+					fmt.Println(err)
+				}
+				for rows.Next() {
+					var data map[string]interface{}
+					err := DB.ScanRows(rows, &data)
+					if err != nil {
+						return
+					}
+					t := data["LAST_ERROR_TIMESTAMP"].(time.Time)
+					fmt.Printf("错误号是：%d\n", data["LAST_ERROR_NUMBER"])
+					fmt.Printf("错误信息是：%s\n", data["LAST_ERROR_MESSAGE"])
+					fmt.Printf("报错时间是：%s\n", formatZeroTime(&t))
+				}
+				fmt.Println("MySQL Replication Health is NOT OK!")
+			}
+
+			if (*first)["Auto_Position"] != 1 {
+				fmt.Println("你没有开启基于GTID全局事务ID复制，请确保CHANGE MASTER TO MASTER_AUTO_POSITION = 1.")
+			}
+		}
+	}
+}
+
+func formatZeroTime(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return "0000-00-00 00:00:00.000000"
+	}
+	return timex.DateFormat(*t, timex.TemplateWithMs6)
 }
