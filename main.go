@@ -184,9 +184,9 @@ func ctrlAction(context *cli.Context) error {
 	tinfo := context.Bool("tinfo")
 	fpk := context.Bool("fpk")
 	dead := context.Bool("dead")
-	repl := context.Bool("repl")
 	uncommitV := context.String("uncommit")
 	binlog := context.StringSlice("binlog")
+	repl := context.Bool("repl")
 
 	if strutil.IsNotBlank(topV) {
 		showFrequentlySql(topV)
@@ -597,7 +597,7 @@ func showFrequentlySql(top string) {
 		}
 		dateFormat := timex.New(lastSeen.Time).DateFormat(timex.TemplateWithMs3)
 
-		wrappedQuery := wordwrap.WrapString(query.String, 70)
+		wrappedQuery := wordwrap.WrapString(query.String, 60)
 		wrappedLastSeen := wordwrap.WrapString(dateFormat, 15)
 
 		tw.AppendRow(table.Row{wrappedQuery, db.String, wrappedLastSeen, execCount.String, maxLatency.String, avgLatency.String})
