@@ -50,7 +50,7 @@ jobs:
           body: |
             This is an automated release.
           draft: false
-          prerelease: true
+          prerelease: false
 
   build-go-binary:
     needs: [check_and_create_release]
