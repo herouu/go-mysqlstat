@@ -1,4 +1,4 @@
-name: Go Release Binaries
+name: Go Release Binaries Release
 
 on:
   push:
