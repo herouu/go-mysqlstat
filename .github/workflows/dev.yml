@@ -1,23 +1,166 @@
-name: Go Release Binaries
+name: Go Release Binaries Dev
 
 on:
   push:
-    branches: [ master ]
+    branches: [ develop ]
 
 permissions:
   contents: write
   packages: write
 
 jobs:
+  load-env:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.load-value.outputs.version }}
+      name: ${{ steps.load-value.outputs.name }}
+      description: ${{ steps.load-value.outputs.description }}
+      maintainer: ${{ steps.load-value.outputs.maintainer }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+      - name: Install yq
+        run: |
+          sudo snap install yq
+      - name: Extract Value from YAML
+        id: load-value
+        run: |
+          version=$(yq '.app.version' version.yml )
+          name=$(yq '.app.name' version.yml )
+          description=$(yq '.app.description' version.yml )
+          maintainer=$(yq '.app.maintainer' version.yml )
+          # 开发版本
+          dev_version=$(echo $version.dev)
+          echo "The extracted value is: $dev_version, $name, $description, $maintainer"
+          echo "::set-output name=version::$dev_version"
+          echo "::set-output name=name::$name"
+          echo "::set-output name=description::$description"
+          echo "::set-output name=maintainer::$maintainer"
+  
+  
+
+  check_and_create_release:
+    runs-on: ubuntu-latest
+    needs: load-env
+    outputs:
+      branch_or_tag: ${{ steps.check_release.outputs.branch_or_tag }}
+    env:
+      VERSION: ${{ needs.load-env.outputs.version }}
+      APP_NAME: ${{ needs.load-env.outputs.name }}
+      DESC: ${{ needs.load-env.outputs.description }}
+      MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Check if Tag Exists
+        id: check_tag
+        uses: actions/github-script@v7
+        env:
+          tag: v${{ env.VERSION }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # 判断tag是否存在，存在则删除，新建tag
+          script: |
+            const ref = 'tags/${{env.tag}}'
+            const endsWith = 'dev'
+            
+            
+            const releases = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            
+            // 删除release                                   
+            const release = releases.data.forEach(r => {
+              if (r.tag_name.includes(endsWith)) {
+                console.log("release存在,删除release",r.tag_name)
+                github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: r.id
+                });
+              }
+            });
+            
+            const tags = await github.rest.git.listMatchingRefs({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'tags'
+            });
+            
+            // 删除tags 
+            const filteredTags = tags.data.forEach(tag => {
+              if (tag.ref.includes(endsWith)) {
+                tagStr = tag.ref.replace('refs/','')
+                console.log("tag存在,删除tag",tagStr)
+                github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: tagStr
+                });
+              }
+            });
+            
+            console.log("tag不存在,新建tag",ref)
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: "refs/"+ref,
+              sha: context.sha });
+
+      - name: Check if Release Exists
+        id: check_release
+        uses: actions/github-script@v7
+        env:
+          tag: v${{ env.VERSION }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const releases = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo
+            });
+            const release = releases.data.find(r => r.tag_name === "${{env.tag}}");
+            if (release) {
+                console.log(release);
+                await github.rest.repos.deleteRelease({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    release_id: release.id
+                });
+              core.setOutput('exists', false);
+              core.setOutput('branch_or_tag', release.tag_name);
+            } else {
+              console.log('Release not found');
+              core.setOutput('exists', false);
+              core.setOutput('branch_or_tag', "${{env.tag}}");
+            }
+      - name: Create Release If Not Exists
+        if: ${{ steps.check_release.outputs.exists == 'false' }}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.check_release.outputs.branch_or_tag }}
+          release_name: Release ${{ steps.check_release.outputs.branch_or_tag }}
+          body: |
+            This is an automated release.
+          draft: false
+          prerelease: true
+
   build-go-binary:
+    needs: [ check_and_create_release,load-env ]
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [ linux, windows, darwin ] # 需要打包的系统
+        goos: [ linux, windows ] # 需要打包的系统
         goarch: [ amd64, arm64 ]
         exclude:
           - goarch: arm64
             goos: windows
+          - goarch: arm64
+            goos: linux
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.50
@@ -25,8 +168,109 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }} # 一个默认的变量，用来实现往 Release 中添加文件
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
-          release_tag: dev
+          release_tag: ${{needs.check_and_create_release.outputs.branch_or_tag}}
           overwrite: true
           goversion: 1.22 # 可以指定编译使用的 Golang 版本
-          binary_name: "go-mysqlstat"
+          binary_name: ${{needs.load-env.outputs.name}}
           compress_assets: auto
+
+  build-linux-packages:
+    runs-on: ubuntu-latest
+    needs:
+      - build-go-binary
+      - load-env
+    env:
+      VERSION: ${{ needs.load-env.outputs.version }}
+      APP_NAME: ${{ needs.load-env.outputs.name }}
+      DESC: ${{ needs.load-env.outputs.description }}
+      MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: print env
+        env:
+          MY_GITHUB_REF: ${{ github.ref }}
+        run: |
+          echo "APP_NAME=${APP_NAME}"
+          echo "version=${MY_GITHUB_REF}"
+          BRANCH_NAME=${MY_GITHUB_REF#refs/heads/}
+          if [[ "$BRANCH_NAME" == "$MY_GITHUB_REF" ]]; then
+          echo "Error: The reference does not seem to be a branch."
+          else
+          echo "The branch name is: $BRANCH_NAME"
+          fi
+          TAG_NAME=${MY_GITHUB_REF#refs/tags/}
+          if [[ "$TAG_NAME" == "$MY_GITHUB_REF" ]]; then
+          echo "Error: The reference does not seem to be a tag."
+          else
+          echo "The tag name is: $TAG_NAME"
+          fi
+
+      - uses: jiro4989/build-deb-action@v3
+        with:
+          package: ${{ env.APP_NAME }}
+          package_root: .
+          maintainer: ${{ env.MAINTAINER }}
+          version: ${{ env.VERSION }}
+          arch: 'amd64'
+          desc: '${{ env.DESC }}'
+
+      - uses: jiro4989/build-rpm-action@v2
+        with:
+          summary: '${{ env.DESC }}'
+          package: ${{ env.APP_NAME }}
+          package_root: .
+          maintainer: ${{ env.MAINTAINER }}
+          version: ${{ env.VERSION }}
+          arch: 'x86_64'
+          desc: '${{ env.DESC }}'
+
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-deb
+          path: |
+            ./*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-rpm
+          path: |
+            ./*.rpm
+  
+  
+
+  upload-linux-packages:
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux-packages
+      - check_and_create_release
+    strategy:
+      matrix:
+        include:
+          - pkg: deb
+            asset_content_type: application/vnd.debian.binary-package
+          - pkg: rpm
+            asset_content_type: application/x-rpm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifact-${{ matrix.pkg }}
+
+      - id: vars
+        run: |
+          echo "::set-output name=asset_name::$(ls *.${{ matrix.pkg }} | head -n 1)"
+
+      - name: Upload Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          # 指定你想要追加资产的Release的tag
+          tag_name: ${{needs.check_and_create_release.outputs.branch_or_tag}}
+          # 上传的文件列表，可以使用通配符
+          files: |
+            ${{ steps.vars.outputs.asset_name }}
+          # 设置为true，允许覆盖同名文件
+          append_body: true
+          # 如果不希望自动创建Release，则设置此参数
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
