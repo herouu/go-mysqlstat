@@ -137,15 +137,38 @@ jobs:
               core.setOutput('branch_or_tag', "${{env.tag}}");
             }
 
-      - name: Release Changelog Builder
-        if: ${{ steps.check_release.outputs.exists == 'false' }}
+
+      - name: Build Changelog
         uses: mikepenz/release-changelog-builder-action@v4
+        id: changelog
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          previous-tag: ${{ steps.check_release.outputs.branch_or_tag }} # The current tag being released
-          output-file: CHANGELOG.md
-          max-tags: 5 # Limit the number of tags shown in the changelog
-          use-commit-author: true # Use the author of each commit as the entry author
+          commitMode: true
+          configurationJson: |
+            {
+              "template": "#{{CHANGELOG}}",
+              "categories": [
+                {
+                    "title": "## Feature",
+                    "labels": ["feat", "feature"]
+                },
+                {
+                    "title": "## Fix",
+                    "labels": ["fix", "bug"]
+                },
+                {
+                    "title": "## Other",
+                    "labels": []
+                }
+              ],
+              "label_extractor": [
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(!)?: ([\\w ])+([\\s\\S]*)",
+                  "target": "$1"
+                }
+              ],
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release If Not Exists
         if: ${{ steps.check_release.outputs.exists == 'false' }}
@@ -155,7 +178,7 @@ jobs:
         with:
           tag_name: ${{ steps.check_release.outputs.branch_or_tag }}
           release_name: ${{ steps.check_release.outputs.branch_or_tag }}
-          body_file: CHANGELOG.md
+          body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: true
 
