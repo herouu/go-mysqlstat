@@ -136,6 +136,40 @@ jobs:
               core.setOutput('exists', false);
               core.setOutput('branch_or_tag', "${{env.tag}}");
             }
+
+      - name: Build Changelog
+        uses: mikepenz/release-changelog-builder-action@v4
+        id: changelog
+        with:
+          commitMode: true
+          configurationJson: |
+            {
+              "template": "#{{CHANGELOG}}",
+              "categories": [
+                {
+                    "title": "## Feature",
+                    "labels": ["feat", "feature"]
+                },
+                {
+                    "title": "## Fix",
+                    "labels": ["fix", "bug"]
+                },
+                {
+                    "title": "## Other",
+                    "labels": []
+                }
+              ],
+              "label_extractor": [
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test){1}(\\([\\w\\-\\.]+\\))?(!)?: ([\\w ])+([\\s\\S]*)",
+                  "target": "$1"
+                }
+              ],
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
       - name: Create Release If Not Exists
         if: ${{ steps.check_release.outputs.exists == 'false' }}
         uses: actions/create-release@v1
@@ -144,8 +178,7 @@ jobs:
         with:
           tag_name: ${{ steps.check_release.outputs.branch_or_tag }}
           release_name: Release ${{ steps.check_release.outputs.branch_or_tag }}
-          body: |
-            This is an automated release.
+          body: ${{ steps.changelog.outputs.changelog }}
           draft: false
           prerelease: false
 
