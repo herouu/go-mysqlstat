@@ -19,7 +19,7 @@ jobs:
       maintainer: ${{ steps.load-value.outputs.maintainer }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Install yq
         run: |
           sudo snap install yq
@@ -33,11 +33,12 @@ jobs:
           # 开发版本
           dev_version=$(echo $version.dev)
           echo "The extracted value is: $dev_version, $name, $description, $maintainer"
-          echo "version=$dev_version" $GITHUB_OUTPUT
-          echo "name=$name" $GITHUB_OUTPUT
-          echo "description=$description" $GITHUB_OUTPUT
-          echo "maintainer=$maintainer" $GITHUB_OUTPUT
-  
+
+          echo "version=$dev_version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          echo "maintainer=$maintainer" >> "$GITHUB_OUTPUT"
+
 
   check_and_delete_release:
     runs-on: ubuntu-latest
@@ -54,7 +55,7 @@ jobs:
       CHANGELOG: ${{ needs.build_change_log.outputs.changelog }}
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -155,7 +156,7 @@ jobs:
       V_VERSION: ${{ needs.load-env.outputs.v_version }}
     steps:
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -300,10 +301,10 @@ jobs:
 
       - id: vars
         run: |
-          echo "::set-output name=asset_name::$(ls *.${{ matrix.pkg }} | head -n 1)"
+         echo "asset_name=$(ls *.${{ matrix.pkg }} | head -n 1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload Assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           # 指定你想要追加资产的Release的tag
           tag_name: ${{needs.check_and_delete_release.outputs.branch_or_tag}}
