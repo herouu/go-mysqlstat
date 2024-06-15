@@ -13,12 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.load-value.outputs.version }}
+      v_version: v${{ steps.load-value.outputs.version }}
       name: ${{ steps.load-value.outputs.name }}
       description: ${{ steps.load-value.outputs.description }}
       maintainer: ${{ steps.load-value.outputs.maintainer }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Install yq
         run: |
           sudo snap install yq
@@ -32,32 +33,37 @@ jobs:
           # 开发版本
           dev_version=$(echo $version)
           echo "The extracted value is: $dev_version, $name, $description, $maintainer"
-          echo "::set-output name=version::$dev_version"
-          echo "::set-output name=name::$name"
-          echo "::set-output name=description::$description"
-          echo "::set-output name=maintainer::$maintainer"
-  
-  
 
-  check_and_create_release:
+          echo "version=$dev_version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          echo "maintainer=$maintainer" >> "$GITHUB_OUTPUT"
+
+
+  check_and_delete_release:
     runs-on: ubuntu-latest
-    needs: load-env
+    needs:
+      - load-env
     outputs:
       branch_or_tag: ${{ steps.check_release.outputs.branch_or_tag }}
     env:
       VERSION: ${{ needs.load-env.outputs.version }}
+      V_VERSION: ${{ needs.load-env.outputs.v_version }}
       APP_NAME: ${{ needs.load-env.outputs.name }}
       DESC: ${{ needs.load-env.outputs.description }}
       MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
+      CHANGELOG: ${{ needs.build_change_log.outputs.changelog }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Check if Tag Exists
         id: check_tag
         uses: actions/github-script@v7
         env:
-          tag: v${{ env.VERSION }}
+          tag: ${{ env.V_VERSION }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           # 判断tag是否存在，存在则删除，新建tag
@@ -70,8 +76,8 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo
             });
-            
-            // 删除release                                   
+
+            // 删除release
             const release = releases.data.forEach(r => {
               if (r.tag_name.includes(endsWith)) {
                 console.log("release存在,删除release",r.tag_name)
@@ -82,7 +88,7 @@ jobs:
                 });
               }
             });
-            
+
             const tags = await github.rest.git.listMatchingRefs({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -101,7 +107,7 @@ jobs:
                 });
               }
             });
-            
+
             console.log("tag不存在,新建tag",ref)
             await github.rest.git.createRef({
               owner: context.repo.owner,
@@ -113,7 +119,7 @@ jobs:
         id: check_release
         uses: actions/github-script@v7
         env:
-          tag: v${{ env.VERSION }}
+          tag: ${{ env.V_VERSION }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -137,43 +143,55 @@ jobs:
               core.setOutput('branch_or_tag', "${{env.tag}}");
             }
 
-      - name: Build Changelog
-        uses: mikepenz/release-changelog-builder-action@v4
-        id: changelog
-        with:
-          configurationJson: |
-            {
-              "template": "#{{CHANGELOG}}\n\n<details>\n<summary>Uncategorized</summary>\n\n#{{UNCATEGORIZED}}\n</details>",
-              "categories": [
-                {
-                    "title": "## 💬 Other",
-                    "labels": ["other"]
-                },
-                {
-                    "title": "## 📦 Dependencies",
-                    "labels": ["dependencies"]
-                }
-              ]
-            }
-          outputFile: CHANGELOG.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+
+
+
+  build_change_log_and_release:
+    runs-on: ubuntu-latest
+    needs:
+      - load-env
+      - check_and_delete_release
+    env:
+      V_VERSION: ${{ needs.load-env.outputs.v_version }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Changelog
+        id: changelog
+        run: |
+          wget https://github.com/git-chglog/git-chglog/releases/download/v0.15.4/git-chglog_0.15.4_linux_amd64.tar.gz
+          mkdir git-chglog
+          tar -xf git-chglog_0.15.4_linux_amd64.tar.gz -C git-chglog
+          sudo install git-chglog/git-chglog /usr/bin
+          changelog_version=$(git-chglog -v)
+          git-chglog -o CHANGELOG.md $V_VERSION
+          echo "changelog_version: $changelog_version"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: |
+            CHANGELOG.md  
 
       - name: Create Release If Not Exists
-        if: ${{ steps.check_release.outputs.exists == 'false' }}
-        uses: actions/create-release@v1
+        uses: ncipollo/release-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ steps.check_release.outputs.branch_or_tag }}
-          release_name: Release ${{ steps.check_release.outputs.branch_or_tag }}
-          body: ${{ steps.changelog.outputs.changelog }}
-          draft: false
+          tag: ${{ needs.check_and_delete_release.outputs.branch_or_tag }}
+          name: ${{ needs.check_and_delete_release.outputs.branch_or_tag }}
+          bodyFile: CHANGELOG.md
           prerelease: false
 
   build-go-binary:
-    needs: [ check_and_create_release,load-env ]
+    needs:
+      - check_and_delete_release
+      - build_change_log_and_release
+      - load-env
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -191,7 +209,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }} # 一个默认的变量，用来实现往 Release 中添加文件
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
-          release_tag: ${{needs.check_and_create_release.outputs.branch_or_tag}}
+          release_tag: ${{needs.check_and_delete_release.outputs.branch_or_tag}}
           overwrite: true
           goversion: 1.22 # 可以指定编译使用的 Golang 版本
           binary_name: ${{needs.load-env.outputs.name}}
@@ -259,14 +277,16 @@ jobs:
           name: artifact-rpm
           path: |
             ./*.rpm
-  
-  
+
+
+
+
 
   upload-linux-packages:
     runs-on: ubuntu-latest
     needs:
       - build-linux-packages
-      - check_and_create_release
+      - check_and_delete_release
     strategy:
       matrix:
         include:
@@ -281,13 +301,13 @@ jobs:
 
       - id: vars
         run: |
-          echo "::set-output name=asset_name::$(ls *.${{ matrix.pkg }} | head -n 1)"
+          echo "asset_name=$(ls *.${{ matrix.pkg }} | head -n 1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload Assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           # 指定你想要追加资产的Release的tag
-          tag_name: ${{needs.check_and_create_release.outputs.branch_or_tag}}
+          tag_name: ${{needs.check_and_delete_release.outputs.branch_or_tag}}
           # 上传的文件列表，可以使用通配符
           files: |
             ${{ steps.vars.outputs.asset_name }}
