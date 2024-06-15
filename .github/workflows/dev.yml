@@ -33,10 +33,10 @@ jobs:
           # 开发版本
           dev_version=$(echo $version.dev)
           echo "The extracted value is: $dev_version, $name, $description, $maintainer"
-          echo "::set-output name=version::$dev_version"
-          echo "::set-output name=name::$name"
-          echo "::set-output name=description::$description"
-          echo "::set-output name=maintainer::$maintainer"
+          echo "version=$dev_version" $GITHUB_OUTPUT
+          echo "name=$name" $GITHUB_OUTPUT
+          echo "description=$description" $GITHUB_OUTPUT
+          echo "maintainer=$maintainer" $GITHUB_OUTPUT
   
 
   check_and_delete_release:
