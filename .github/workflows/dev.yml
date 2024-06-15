@@ -79,7 +79,7 @@ jobs:
 
             // 删除release
             const release = releases.data.forEach(r => {
-              if (r.tag_name.includes(endsWith)) {
+              if (r.tag_name.endsWith(endsWith)) {
                 console.log("release存在,删除release",r.tag_name)
                 github.rest.repos.deleteRelease({
                   owner: context.repo.owner,
@@ -97,7 +97,7 @@ jobs:
 
             // 删除tags
             const filteredTags = tags.data.forEach(tag => {
-              if (tag.ref.includes(endsWith)) {
+              if (tag.ref.endsWith(endsWith)) {
                 tagStr = tag.ref.replace('refs/','')
                 console.log("tag存在,删除tag",tagStr)
                 github.rest.git.deleteRef({
