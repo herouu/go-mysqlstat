@@ -64,12 +64,8 @@ type CalQuota struct {
 func main() {
 
 	//yml解析
-	file, err := os.ReadFile("version.yml")
-	if err != nil {
-		return
-	}
 	resultMap := make(map[string]map[string]string)
-	err = yaml.Unmarshal(file, &resultMap)
+	err := yaml.Unmarshal(Version, &resultMap)
 	if err != nil {
 		fmt.Printf("Unmarshal: %v", err)
 		return
