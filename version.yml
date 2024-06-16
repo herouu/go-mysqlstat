@@ -1,5 +1,5 @@
 app:
   name: go-mysqlstat
-  version: 1.0.3
-  description: go语言版本的mysqlstat
+  version: 1.0.4
+  description: MySQL命令行监控工具go-mysqlstat(mysqlstat go语言版本)
   maintainer: herouu

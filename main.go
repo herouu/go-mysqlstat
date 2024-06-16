@@ -15,6 +15,7 @@ import (
 	"github.com/mitchellh/go-wordwrap"
 	"github.com/siddontang/go-log/log"
 	"github.com/urfave/cli/v2"
+	"gopkg.in/yaml.v3"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"os"
@@ -62,9 +63,22 @@ type CalQuota struct {
 
 func main() {
 
+	//yml解析
+	file, err := os.ReadFile("version.yml")
+	if err != nil {
+		return
+	}
+	resultMap := make(map[string]map[string]string)
+	err = yaml.Unmarshal(file, &resultMap)
+	if err != nil {
+		fmt.Printf("Unmarshal: %v", err)
+		return
+	}
+
 	app := cli.NewApp()
-	app.Name = "go-mysqlstat"
-	app.Usage = "MySQL命令行监控工具 - mysqlstat"
+	app.Name = resultMap["app"]["name"]
+	app.Version = resultMap["app"]["version"]
+	app.Usage = resultMap["app"]["description"]
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:     "mysql_ip",
@@ -158,9 +172,8 @@ func main() {
 	}
 
 	app.Action = ctrlAction
-	app.Version = "1.0.0"
-	err := app.Run(os.Args)
-	if err != nil {
+	err1 := app.Run(os.Args)
+	if err1 != nil {
 		return
 	}
 }
