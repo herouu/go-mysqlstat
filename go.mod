@@ -12,6 +12,7 @@ require (
 	github.com/pingcap/errors v0.11.5-0.20221009092201-b66cddb77c32
 	github.com/siddontang/go-log v0.0.0-20180807004314-8d05993dda07
 	github.com/urfave/cli/v2 v2.27.2
+	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.5.6
 	gorm.io/gorm v1.25.7
 )
