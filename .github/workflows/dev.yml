@@ -206,6 +206,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.50
+        id: build_binary
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }} # 一个默认的变量，用来实现往 Release 中添加文件
           goos: ${{ matrix.goos }}
@@ -216,21 +217,25 @@ jobs:
           binary_name: ${{needs.load-env.outputs.name}}
           compress_assets: auto
 
-  build-linux-packages:
-    runs-on: ubuntu-latest
-    needs:
-      - build-go-binary
-      - load-env
-    env:
-      VERSION: ${{ needs.load-env.outputs.version }}
-      APP_NAME: ${{ needs.load-env.outputs.name }}
-      DESC: ${{ needs.load-env.outputs.description }}
-      MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
-    steps:
-      - uses: actions/checkout@v4
+      - name: print env
+        if: matrix.goarch == 'amd64' && matrix.goos == 'linux'
+        run: |
+          echo "release_asset_dir=${{steps.build_binary.outputs.release_asset_dir}}"
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.goarch == 'amd64' && matrix.goos == 'linux'
+        with:
+          name: artifact-binary
+          path: |
+            ${{steps.build_binary.outputs.release_asset_dir}}/${{needs.load-env.outputs.name}}
+
       - name: print env
         env:
           MY_GITHUB_REF: ${{ github.ref }}
+          VERSION: ${{ needs.load-env.outputs.version }}
+          APP_NAME: ${{ needs.load-env.outputs.name }}
+          DESC: ${{ needs.load-env.outputs.description }}
+          MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
         run: |
           echo "APP_NAME=${APP_NAME}"
           echo "version=${MY_GITHUB_REF}"
@@ -247,10 +252,36 @@ jobs:
           echo "The tag name is: $TAG_NAME"
           fi
 
+  build-linux-packages:
+    runs-on: ubuntu-latest
+    needs:
+      - build-go-binary
+      - load-env
+    env:
+      VERSION: ${{ needs.load-env.outputs.version }}
+      APP_NAME: ${{ needs.load-env.outputs.name }}
+      DESC: ${{ needs.load-env.outputs.description }}
+      MAINTAINER: ${{ needs.load-env.outputs.maintainer }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifact-binary
+          path: artifact
+
+      - run: ls -R artifact
+
+      - name: create sample script
+        run: |
+          mkdir -p .debpkg/usr/local/bin
+          mkdir -p .rpmpkg/usr/local/bin
+          cp -p artifact/* .debpkg/usr/local/bin/
+          cp -p artifact/* .rpmpkg/usr/local/bin/
+          sudo chmod +x .debpkg/usr/local/bin/*
+
       - uses: jiro4989/build-deb-action@v3
         with:
           package: ${{ env.APP_NAME }}
-          package_root: .
+          package_root: .debpkg
           maintainer: ${{ env.MAINTAINER }}
           version: ${{ env.VERSION }}
           arch: 'amd64'
@@ -260,7 +291,7 @@ jobs:
         with:
           summary: '${{ env.DESC }}'
           package: ${{ env.APP_NAME }}
-          package_root: .
+          package_root: .rpmpkg
           maintainer: ${{ env.MAINTAINER }}
           version: ${{ env.VERSION }}
           arch: 'x86_64'
